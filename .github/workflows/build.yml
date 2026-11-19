@@ -1,0 +1,79 @@
+name: Build BLESSED SCRATCH
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  engine-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: DSP engine sanity test
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -o engine_test tests/engine_test.cpp Source/ScratchEngine.cpp
+          ./engine_test
+
+  build:
+    needs: engine-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3 + Standalone
+        run: cmake --build build --config Release --target BlessedScratch_VST3 BlessedScratch_Standalone --parallel 4
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item -Recurse "build/BlessedScratch_artefacts/Release/VST3/BLESSED SCRATCH.vst3" dist/
+          Copy-Item "build/BlessedScratch_artefacts/Release/Standalone/BLESSED SCRATCH.exe" dist/
+          Compress-Archive -Path dist/* -DestinationPath BlessedScratch-Windows.zip
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          cp -R "build/BlessedScratch_artefacts/Release/VST3/BLESSED SCRATCH.vst3" dist/
+          cp -R "build/BlessedScratch_artefacts/Release/Standalone/BLESSED SCRATCH.app" dist/
+          codesign --force --deep -s - "dist/BLESSED SCRATCH.vst3" || true
+          codesign --force --deep -s - "dist/BLESSED SCRATCH.app" || true
+          ditto -c -k --keepParent dist BlessedScratch-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlessedScratch-${{ matrix.name }}
+          path: BlessedScratch-${{ matrix.name }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
